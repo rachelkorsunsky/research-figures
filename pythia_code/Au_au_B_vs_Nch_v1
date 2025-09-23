@@ -1,0 +1,211 @@
+#include "Pythia8/Pythia.h"
+#include "Pythia8/HeavyIons.h"
+using namespace Pythia8;
+
+#include "TFile.h"
+#include "TH1F.h"
+#include "TH1D.h"
+#include "TH2F.h"
+#include "TCanvas.h"
+#include "TLegend.h"
+#include "TGraphErrors.h"
+#include "TPaveText.h"
+#include "TMath.h"
+#include "TStyle.h"
+#include <vector>
+#include <iostream>
+#include <cmath>
+
+#include "headers.h"
+
+int main(int argc, char* argv[]) {
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <job_index> <nEvent>\n";
+        return 1;
+    }
+
+    int jobIndex = atoi(argv[1]);
+    Long64_t nEvent = atoi(argv[2]);
+    ROOT::EnableImplicitMT(4);
+
+
+    gStyle->SetPadTickX(1);
+    gStyle->SetPadTickY(1);
+    gStyle->SetOptStat(0);
+
+
+    Pythia pythia;
+    pythia.readString("Beams:idA = 1000791970"); // Gold nucleus
+    pythia.readString("Beams:idB = 1000791970"); // Gold nucleus
+    pythia.readString("Beams:eCM = 200.");       // sqrt(sNN) = 200 GeV
+    pythia.readString("Beams:frameType = 1");
+    pythia.readString("HardQCD:all = on");       // all QCD processes
+    pythia.readString("Angantyr:CollisionModel = 2");
+    pythia.readString(Form("Random:seed = %d", 100 + jobIndex));
+    long int nCountDebug = 1;
+    pythia.readString(Form("Next:numberCount = %ld", nCountDebug));
+
+
+
+    if (!pythia.init()) return 1;
+
+   
+    TFile *wf = new TFile(Form("AuAu_job%d.root", jobIndex), "RECREATE");
+
+ 
+    TH1D* hNch = new TH1D("hNch", "Charged multiplicity;N_{ch};Events", 200, 0, 2000);
+    TH2F* hRadial = new TH2F("hRadial", "Radial coverage;z [cm];r [cm]", 
+                             200, -300, 300, 200, 0, 300);
+ 
+     TH2F* h_bNch = new TH2F("h_b_vs_Nch", 
+   	 "Impact parameter vs N_{ch}; b [fm]; N_{ch}", 
+   	 200, 0, 20,   // b bins
+   	 200, 0, 7000  // Nch bins (adjust max if needed)
+     );	
+
+
+ 
+    TH1F* h_eta = new TH1F("h_eta", "eta distribution;#eta;Entries", 1000, -10, 10);
+    TH1F* h_pt  = new TH1F("h_pt", "p_{T} distribution; p_{T} [GeV]; Entries", 1000, 0, 10);
+
+  
+    const int nPtBins = 20;
+    double ptBins[nPtBins+1];
+    for (int i = 0; i <= nPtBins; i++) ptBins[i] = 0.5 + 0.5*i;
+
+    std::vector<TH1D*> hDeltaPhiVec;
+    for (int i = 0; i < nPtBins; i++) {
+        TString name = Form("hDeltaPhi_ptBin%d", i);
+        TString title = Form("#Delta#phi for %.1f < p_{T} < %.1f;#Delta#phi;Counts", 
+                            ptBins[i], ptBins[i+1]);
+        hDeltaPhiVec.push_back(new TH1D(name, title, 64, -TMath::Pi(), TMath::Pi()));
+    }
+
+ 
+    int count = 0;
+   for (Long64_t iEvent = 0; iEvent < nEvent; iEvent++) {
+    if (!pythia.next()) continue;
+    ++count;
+
+       
+   int code = pythia.info.code();
+    if ((iEvent % nCountDebug) == 0)
+      std::cout << " run " << count << " events, out of " << iEvent
+                << " attempted / " << (double)iEvent / nEvent * 100
+                << "(%) ... current code " << code << std::endl;
+
+
+    int nCharged = 0;
+    std::vector<const Particle*> final_particles;
+
+    // --- loop over particles ---
+    for (int j = 0; j < pythia.event.size(); ++j) {
+        const Particle& p = pythia.event[j];
+        if (!p.isFinal()) continue;
+
+        if (p.isCharged()) nCharged++;
+        h_eta->Fill(p.eta());
+        h_pt->Fill(p.pT());
+
+        // Detector coverage
+        double x = p.xProd();
+        double y = p.yProd();
+        double z = p.zProd();
+        double r = std::sqrt(x*x + y*y);
+        hRadial->Fill(z, r);
+
+        final_particles.push_back(&p);
+    }
+
+   
+    hNch->Fill(nCharged);
+
+   
+    double b = pythia.info.hiInfo->b();
+   
+        h_bNch->Fill(b, nCharged);
+  
+
+
+    for (size_t i = 0; i < final_particles.size(); i++) {
+        const Particle* trig = final_particles[i];
+        double pt_trig = trig->pT();
+        double phi_trig = trig->phi();
+
+        int binIndex = -1;
+        for (int k = 0; k < nPtBins; k++) {
+            if (pt_trig >= ptBins[k] && pt_trig < ptBins[k+1]) {
+                binIndex = k;
+                break;
+            }
+        }
+        if (binIndex == -1) continue;
+
+        for (size_t j = 0; j < final_particles.size(); j++) {
+            if (i == j) continue;
+            double dphi = final_particles[j]->phi() - phi_trig;
+            while (dphi > TMath::Pi()) dphi -= 2*TMath::Pi();
+            while (dphi < -TMath::Pi()) dphi += 2*TMath::Pi();
+            hDeltaPhiVec[binIndex]->Fill(dphi);
+        }
+    }
+}
+
+
+    pythia.stat();
+    std::cout << "Total events generated: " << count << std::endl;
+
+ 
+
+
+
+
+    TCanvas* c_bNch = new TCanvas("c_bNch", "b vs N_ch", 800, 600);
+    c_bNch->SetLeftMargin(0.12);
+    c_bNch->SetRightMargin(0.15);
+    c_bNch->SetTopMargin(0.08);
+    c_bNch->SetBottomMargin(0.12);
+    
+   
+    h_bNch->SetStats(0);
+    h_bNch->GetXaxis()->SetTitleSize(0.045);
+    h_bNch->GetYaxis()->SetTitleSize(0.045);
+    h_bNch->GetXaxis()->SetLabelSize(0.04);
+    h_bNch->GetYaxis()->SetLabelSize(0.04);
+    h_bNch->GetYaxis()->SetTitleOffset(1.2);
+    h_bNch->GetZaxis()->SetTitle("Counts");
+    h_bNch->GetZaxis()->SetTitleSize(0.045);
+    h_bNch->GetZaxis()->SetLabelSize(0.04);
+    h_bNch->GetZaxis()->SetTitleOffset(1.2);
+    
+   
+    gStyle->SetPalette(kViridis);
+    h_bNch->Draw("COLZ");
+    
+  
+    TPaveText* box2D = new TPaveText(0.48, 0.75, 0.78, 0.88, "NDC");
+    box2D->SetBorderSize(0);
+    box2D->SetFillColorAlpha(kWhite, 0.8);
+    box2D->SetTextSize(0.035);
+    box2D->SetTextAlign(12);
+    box2D->SetTextFont(42);
+    box2D->AddText("Pythia8 Angantyr Simulation");
+    box2D->AddText("Au+Au #sqrt{s_{NN}} = 200 GeV");
+    box2D->AddText("N_{ch} < 1 events");
+    box2D->Draw();
+    
+    c_bNch->SaveAs("/Users/rachelkorsunsky/Downloads/research-figures/Pythia_data/b_vs_Nch.png");
+    c_bNch->SaveAs("/Users/rachelkorsunsky/Downloads/research-figures/Pythia_data/b_vs_Nch.pdf");
+
+   
+    wf->cd();
+    hNch->Write();
+    hRadial->Write();
+    h_eta->Write();
+    h_pt->Write();
+    h_bNch->Write();
+    for (auto h : hDeltaPhiVec) h->Write();
+    wf->Close();
+
+    return 0;
+}
