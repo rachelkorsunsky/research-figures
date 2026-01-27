@@ -1,0 +1,329 @@
+
+#include "TFile.h"
+#include "TChain.h"
+#include "TTree.h"
+#include "TProfile.h"
+#include "TH1D.h"
+#include "TH2F.h"
+#include "TMath.h"
+#include <vector>
+#include <string>
+#include <algorithm>
+#include <iostream>
+#include <cmath>
+#include "include/EPDGeometry.h"
+
+
+int main() {
+    // -------- Input chain --------
+    TChain ch("Events");
+    int nAdded = ch.Add("data/events_job*.root");
+    if (nAdded == 0) {
+        std::cerr << "ERROR: No input files matched data/events_job*.root\n";
+        return 1;
+    }
+    std::cout << "Loaded files: " << nAdded << "\n";
+
+    // -------- Branches --------
+    double b = 0.0;
+    int nCh = 0;
+
+    std::vector<double>* eta = nullptr;
+    std::vector<double>* phi = nullptr;
+    std::vector<double>* pt  = nullptr;
+    std::vector<double>* pz  = nullptr;
+    std::vector<int>* side   = nullptr;
+    std::vector<int>* ring   = nullptr;
+
+    ch.SetBranchAddress("b", &b);
+    ch.SetBranchAddress("nCh", &nCh);
+    ch.SetBranchAddress("eta", &eta);
+    ch.SetBranchAddress("phi", &phi);
+    ch.SetBranchAddress("pt",  &pt);
+    ch.SetBranchAddress("pz",  &pz);
+    ch.SetBranchAddress("side", &side);
+
+    bool hasRingBranch = (ch.GetBranch("ring") != nullptr);
+    if (hasRingBranch) {
+        ch.SetBranchAddress("ring", &ring);
+        std::cout << "Found branch: ring (ring-by-ring enabled)\n";
+    } else {
+        std::cout << "WARNING: No branch named 'ring' found. Ring-by-ring will be skipped.\n";
+    }
+
+    const Long64_t numberOfEvents = ch.GetEntries(); //long64 stores more integers since # of events is a large number
+    //get.entries retrieves all entries across my 5 jobs
+    std::cout << "Total events: " << numberOfEvents << "\n";
+
+    // -------- Output  --------
+    TFile* fout = new TFile("analysis_output.root", "RECREATE");
+
+    
+
+    // -------- histograms --------
+    TH1D* hB        = new TH1D("hB",   "Impact parameter b;b [fm];counts", 200, 0, 20);
+    TH1D* hNch      = new TH1D("hNch", "nCh;nCh;counts", 200, 0, 2000);
+    TH1D* hEta_all  = new TH1D("hEta_all",  "All Charged Particles;#eta;Counts", 100, -6, 6);
+    TH1D* hEta_SEPD = new TH1D("hEta_SEPD", "Particles Reaching sEPD;#eta;Counts", 100, 2.0, 5.0);
+    TH1D* hEta_posZ = new TH1D("hEta_posZ", "+Z sEPD;#eta;Counts", 100, 2.0, 5.0);
+    TH1D* hEta_negZ = new TH1D("hEta_negZ", "-Z sEPD;#eta;Counts", 100, -5.0, -2.0);
+    TH2F* hEta_vs_Ring = new TH2F("hEta_vs_Ring", "#eta vs Ring;Ring;#eta", N_RINGS, -0.5, N_RINGS-0.5, 100, 2.0, 5.0);
+    TH2F* hEta_vs_b    = new TH2F("hEta_vs_b", "#eta vs b;b [fm];#eta",100, 0, 20, 100, 2.0, 5.0);
+    TH1D* hPsi2_posZ = new TH1D("hPsi2_posZ", "#Psi_{2} (+Z);#Psi;Events",   50, -TMath::Pi()/2, TMath::Pi()/2);
+    TH1D* hPsi2_negZ = new TH1D("hPsi2_negZ", "#Psi_{2} (-Z);#Psi;Events",  50, -TMath::Pi()/2, TMath::Pi()/2);
+    TH2F* hPsi2_posZnegZ = new TH2F("hPsi2_posZnegZ",  "#Psi_{2}^{+Z} vs #Psi_{2}^{-Z};#Psi_{2}^{+Z};#Psi_{2}^{-Z}",  50, -TMath::Pi()/2, TMath::Pi()/2, 50, -TMath::Pi()/2, TMath::Pi()/2);
+    TH1D* hRingOcc = new TH1D("hRingOcc", "EPD Ring Occupancy;Ring ID;Counts",  N_RINGS, -0.5, N_RINGS-0.5);
+    TH2F* hBNch = new TH2F("hBNch", "Impact parameter vs N_{ch};b [fm];N_{ch}",  200, 0, 20, 200, 0, 7000);
+    TH1D* hDPsi = new TH1D("hDPsi", "#Delta#Psi;#Delta#Psi;counts", 200, -TMath::Pi(), TMath::Pi());
+
+    // -------- tprofiles and sets of 16 --------
+
+    // Main cos2 profiles vs impact parameter
+    TProfile* pCos2Diff_impact = new TProfile("pCos2Diff_impact", 
+        "<cos(2(#Psi_{pos} - #Psi_{neg}))> vs impact parameter;impact parameter [fm];<cos(2#Delta#Psi)>", 
+        N_IMPACT_BINS, B_MIN, B_MAX);
+
+    std::vector<TProfile*> pCos2Diff_impact_ring(N_RINGS, nullptr);
+    if (hasRingBranch) {
+        for (int r = 0; r < N_RINGS; r++) {
+            pCos2Diff_impact_ring[r] = new TProfile(
+                Form("pCos2Diff_impact_ring%02d", r),
+                Form("Ring %d: <cos(2(#Psi_{pos} - #Psi_{neg}))> vs impact parameter;impact parameter [fm];<cos(2#Delta#Psi)>", r),
+                N_IMPACT_BINS, B_MIN, B_MAX
+            );
+        }
+    }
+
+
+    std::vector<TH1D*> hDPsi_ring(N_RINGS, nullptr);
+    std::vector<TH2F*> hPsi2_posZnegZ_ring(N_RINGS, nullptr);
+    if (hasRingBranch) {
+        for (int r = 0; r < N_RINGS; r++) {
+            hDPsi_ring[r] = new TH1D(
+                Form("hDPsi_ring%02d", r),
+                Form("Ring %d: #Delta#Psi;#Delta#Psi;counts", r),
+                200, -TMath::Pi(), TMath::Pi()
+            );
+            hPsi2_posZnegZ_ring[r] = new TH2F(Form("hPsi2_posZnegZ_ring%02d", r), Form( "Ring %d: #Psi_{2}^{+Z} vs #Psi_{2}^{-Z};#Psi_{2}^{+Z};#Psi_{2}^{-Z}", r),
+            50, -TMath::Pi()/2, TMath::Pi()/2, 50, -TMath::Pi()/2, TMath::Pi()/2);
+        }
+    }
+
+    // -------- Event loop --------
+    for (Long64_t i = 0; i < numberOfEvents; i++) {
+        ch.GetEntry(i);
+
+        if (!phi || !side || !eta) continue;
+
+        // ---------- Basic QA ----------
+        hB->Fill(b);
+        hNch->Fill(nCh);
+        hBNch->Fill(b, nCh);
+
+        // ---------- Loop over all particles in the event ----------
+        const int nStoredParticles = (int)phi->size();
+        for (int j = 0; j < nStoredParticles; j++) {
+            hEta_all->Fill(eta->at(j));
+
+            // Check if particle hits EPD and get ring info
+            if (hasRingBranch && ring && (int)ring->size() == nStoredParticles) { //size of vector has to have same amount of data entries as particles
+                int ringNumber = ring->at(j);
+                if (ringNumber >= 0 && ringNumber < N_RINGS) {
+                    hRingOcc->Fill(ringNumber);
+                    hEta_vs_Ring->Fill(ringNumber, eta->at(j));
+                    hEta_SEPD->Fill(eta->at(j));
+                    hEta_vs_b->Fill(b, eta->at(j));
+                }
+            }
+
+            // Fill side-specific eta distributions
+            int s = side->at(j);
+            if (s > 0) hEta_posZ->Fill(eta->at(j));
+            else hEta_negZ->Fill(eta->at(j));
+        }
+
+        // ---------- Compute overall event plane angles ----------
+      
+        std::vector<double> phi_pos_all;
+        std::vector<double> phi_neg_all;
+        phi_pos_all.reserve(phi->size());
+        phi_neg_all.reserve(phi->size());
+
+        for (int j = 0; j < nStoredParticles; j++) {
+            const int s = side->at(j);
+            if (s == 0) continue;
+
+            if (!(eta->at(j) > 2.0 && eta->at(j) < 5.0) && !(eta->at(j) < -2.0 && eta->at(j) > -5.0)) continue; //eta range
+
+            if (s > 0) phi_pos_all.push_back(phi->at(j));
+            else       phi_neg_all.push_back(phi->at(j));
+        }
+
+        if (phi_pos_all.empty() || phi_neg_all.empty()) continue;
+
+       
+        double Qx_pos = 0.0, Qy_pos = 0.0;
+        for (double phi_val : phi_pos_all) {
+            Qx_pos += std::cos(2.0 * phi_val);
+            Qy_pos += std::sin(2.0 * phi_val);
+        }
+        double psi2_pos = 0.5 * std::atan2(Qy_pos, Qx_pos);
+
+        double Qx_neg = 0.0, Qy_neg = 0.0;
+        for (double phi_val : phi_neg_all) {
+            Qx_neg += std::cos(2.0 * phi_val);
+            Qy_neg += std::sin(2.0 * phi_val);
+        }
+        double psi2_neg = 0.5 * std::atan2(Qy_neg, Qx_neg);
+
+        
+        hPsi2_posZ->Fill(psi2_pos);
+        hPsi2_negZ->Fill(psi2_neg);
+        hPsi2_posZnegZ->Fill(psi2_pos, psi2_neg);
+
+        // Calculate cos(2ΔΨ) and fill vs impact parameter
+        double dpsi = wrapToPi(psi2_pos - psi2_neg);
+        hDPsi->Fill(dpsi);
+
+        double cos2d = std::cos(2.0 * dpsi);
+        pCos2Diff_impact->Fill(b, cos2d);
+
+        // ---------- Ring-by-ring event planes ----------
+        if (hasRingBranch && ring && (int)ring->size() == (int)phi->size()) {
+            std::vector<std::vector<double>> phi_by_ring_pos(N_RINGS);
+            std::vector<std::vector<double>> phi_by_ring_neg(N_RINGS);
+            
+            for (int j = 0; j < nStoredParticles; j++) {
+                int ringNumber = ring->at(j);
+                int s = side->at(j);
+                
+                if (ringNumber >= 0 && ringNumber < N_RINGS) {
+                    if (s > 0) {
+                        phi_by_ring_pos[ringNumber].push_back(phi->at(j));
+                    } else {
+                        phi_by_ring_neg[ringNumber].push_back(phi->at(j));
+                    }
+                }
+            }
+            
+            for (int r = 0; r < N_RINGS; r++) {
+                
+                if (phi_by_ring_pos[r].empty() || phi_by_ring_neg[r].empty()) continue;
+                
+                double Qx_pos = 0.0, Qy_pos = 0.0;
+                for (double phi_val : phi_by_ring_pos[r]) { 
+                    Qx_pos += std::cos(2.0 * phi_val);
+                    Qy_pos += std::sin(2.0 * phi_val);
+                }
+                double psi_pos_r = 0.5 * std::atan2(Qy_pos, Qx_pos);
+                    
+                double Qx_neg = 0.0, Qy_neg = 0.0;
+                for (double phi_val : phi_by_ring_neg[r]) {
+                    Qx_neg += std::cos(2.0 * phi_val);
+                    Qy_neg += std::sin(2.0 * phi_val);
+                }
+                double psi_neg_r = 0.5 * std::atan2(Qy_neg, Qx_neg);
+                hPsi2_posZnegZ_ring[r]->Fill(psi_pos_r, psi_neg_r); //try a function
+                double dpsi_r = wrapToPi(psi_pos_r - psi_neg_r);
+                hDPsi_ring[r]->Fill(dpsi_r);
+                    
+                double cos2d_r = std::cos(2.0 * dpsi_r);
+                pCos2Diff_impact_ring[r]->Fill(b, cos2d_r);              
+            }
+        }
+    }
+
+    // -------- Convert to resolution histograms --------
+    TH1D* hRes_impact = makeResolutionHistFromProfile(pCos2Diff_impact, "hRes_impact");
+    hRes_impact->SetTitle("EPD resolution vs impact parameter;impact parameter [fm];resolution R");
+
+    std::vector<TH1D*> hRes_impact_ring(N_RINGS, nullptr);
+    if (hasRingBranch) {
+        for (int r = 0; r < N_RINGS; r++) {
+            hRes_impact_ring[r] = makeResolutionHistFromProfile(
+                pCos2Diff_impact_ring[r],
+                Form("hRes_impact_ring%02d", r)
+            );
+            hRes_impact_ring[r]->SetTitle(
+                Form("Ring %d resolution vs impact parameter;impact parameter [fm];resolution R", r));
+        }
+    }
+
+    // -------- Write output --------
+    fout->cd();
+
+    hB->Write();
+    hNch->Write();
+    hBNch->Write();
+    hEta_all->Write();
+    hEta_SEPD->Write();
+    hEta_posZ->Write();
+    hEta_negZ->Write();
+    hEta_vs_Ring->Write();
+    hEta_vs_b->Write();
+    hPsi2_posZ->Write();
+    hPsi2_negZ->Write();
+    hPsi2_posZnegZ->Write();
+    hRingOcc->Write();
+    hDPsi->Write();
+
+    pCos2Diff_impact->Write();
+    hRes_impact->Write();
+
+    if (hasRingBranch) {
+        for (int r = 0; r < N_RINGS; r++) {
+            hDPsi_ring[r]->Write();
+            hPsi2_posZnegZ_ring[r]->Write();
+            pCos2Diff_impact_ring[r]->Write();
+            hRes_impact_ring[r]->Write();  
+
+        }
+    }
+
+    fout->Close();
+    std::cout << "\nYour file, analysis_output.root, has now been written\n";
+    return 0;
+}
+
+
+
+//function library
+// #pragma once
+// #include <cmath>
+// #include "TProfile.h"
+// #include "TH1D.h"
+
+// const int N_RINGS = 16;
+// const double EPD_Z = 316.0; // cm
+
+// const int N_IMPACT_BINS = 25; 
+// const double B_MIN = 0.0;
+// const double B_MAX = 14.0;
+
+
+// static inline double wrapToPi(double x) {
+//     if (x<= -M_PI) x += 2*M_PI;
+//     if (x>= M_PI) x -= 2*M_PI;    
+//     return x;   
+// }
+
+
+// TH1D* makeResolutionHistFromProfile(TProfile* cos2dpsi_profile, const char* histogramName) { //input cos2dpsi 
+//     TH1D* resolutionHistogram = cos2dpsi_profile->ProjectionX(histogramName);
+//     for (int i = 1; i <= resolutionHistogram->GetNbinsX(); i++) {
+//         double avr_cos2dpsi = cos2dpsi_profile->GetBinContent(i);
+//         double errorOnAverage = cos2dpsi_profile->GetBinError(i);
+//         if (avr_cos2dpsi > 0) {
+//             resolutionHistogram->SetBinContent(i, std::sqrt(2*avr_cos2dpsi)); //conversion to resolution
+//             resolutionHistogram->SetBinError(i, errorOnAverage / (2.0 * std::sqrt(2*avr_cos2dpsi)));
+//         } else {
+//             resolutionHistogram->SetBinContent(i, 0.0);
+//             resolutionHistogram->SetBinError(i, 0.0);
+//         }
+//     }
+//     return resolutionHistogram;
+// }
+
+
+
+
