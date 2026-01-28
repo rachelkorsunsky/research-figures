@@ -1,7 +1,7 @@
 Changes made to code over the last month:
 
 
-I initially incorrectly treated resolution as a distribution rather than a mean by directly histogramming the square root of cos(2DPsi). This was corrected by switching to using TProfiles which computed the event-averaged ⟨cos(2ΔΨ)⟩ (lines 96–102 in my code). I also used a function to convert cos(2DPsi) to the resolution via (lines ~276–295). 
+I initially incorrectly treated resolution as a distribution rather than a mean by directly histogramming the square root of cos(2DPsi). This was corrected by switching to using TProfiles which computed the event-averaged ⟨cos(2ΔΨ)⟩ (lines 96–102 in my code). I also used a function to convert cos(2DPsi) to the resolution  (lines ~276–295). 
 
 
 I initially attempted to plot resolution versus centrality because the function I created to calculate it gave values that were outside of the bounds (over 100). I created an impact parameter vs counts graph and calculated the centrality from its values. I then hard-coded these values into centrality bins which gave me extremely small values of resolution later that were 3 orders of magnitude too small. 
