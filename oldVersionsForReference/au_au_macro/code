@@ -1,0 +1,553 @@
+
+#include "Pythia8/Pythia.h"
+#include "Pythia8/HeavyIons.h"
+using namespace Pythia8;
+
+#include "TFile.h"
+#include "TH1D.h"
+#include "TH2F.h"
+#include "TCanvas.h"
+#include "TPaveText.h"
+#include "TMath.h"
+#include "TStyle.h"
+#include <vector>
+#include <iostream>
+#include <cmath>
+#include <chrono>
+#include "TProfile.h"
+#include "TError.h"
+#include "TTree.h"
+#include <sys/stat.h>  // Add this for directory checking
+#include <cstdlib>     // Add this for system()
+
+// ----------------- EPD Geometry -----------------
+const int N_RINGS = 16;
+const double EPD_Z = 316.0; // cm
+const double EPD_R[N_RINGS] = { 
+    6.8, 11.2, 15.6, 20.565, 26.095, 31.625, 37.155, 42.685, 
+    48.215, 53.745, 59.275, 64.805, 70.335, 75.865, 81.395, 86.925 
+}; // outer edges of rings
+
+int getCentralityBin(double b) { //my centrality bins
+    if (b < 4.88) return 0; // 0-10%
+    if (b < 6.81) return 1; // 10-20%
+    if (b < 8.40) return 2; // 20-30%
+    if (b < 9.71) return 3; // 30-40%
+    if (b < 10.81) return 4; // 40-50%
+    if (b < 11.84) return 5; // 50-60%
+    if (b < 12.76) return 6; // 60-70%
+    if (b < 13.68) return 7; // 70-80%
+    if (b < 14.65) return 8; // 80-90% mainly seeing range from less than 3 to 17
+    return 9; // 90-100%
+}
+
+
+// ----------------- Helper Functions -----------------
+
+
+int findRing(double r) {
+    if (r < 0 || r > EPD_R[N_RINGS - 1]) return -1; //error checking for rings outside of bounds
+    
+    for (int i = 0; i < N_RINGS; ++i) { 
+        if (r <= EPD_R[i]) return i; //if r is less than or equal to a ring at that point, return the ring
+    }
+    return -1;
+}
+
+// ----------------- wrap around problem -----------------
+
+double normalizeAngleToPi(double angle) { //wrap around problem
+    while (angle > M_PI) angle -= 2 * M_PI;
+    while (angle < -M_PI) angle += 2 * M_PI;
+    return angle;
+}
+
+double angleDifferenceHalfPi(double angle1, double angle2) { 
+    double difference = angle1 - angle2;
+    double normalized_diff = normalizeAngleToPi(difference);
+    
+    if (normalized_diff > M_PI / 2.0) {
+        normalized_diff -= M_PI;
+    } else if (normalized_diff < -M_PI / 2.0) {
+        normalized_diff += M_PI;
+    }
+    return normalized_diff;
+}
+
+
+// ----------------- plotting code -----------------
+TPaveText* makeLabelBox(const char* line3) {
+    auto box = new TPaveText(0.48, 0.75, 0.78, 0.88, "NDC");
+    box->SetBorderSize(0);
+    box->SetFillColorAlpha(kWhite, 0.8);
+    box->SetTextSize(0.035);
+    box->SetTextAlign(12);
+    box->SetTextFont(42);
+    box->AddText("Pythia8 Angantyr Simulation");
+    box->AddText("Au+Au #sqrt{s_{NN}} = 200 GeV");
+    
+    if (line3) {
+        box->AddText(line3);
+    }
+    return box;
+}
+
+void plotResolutionVsB(TProfile* hRes_B_Full) {
+    TCanvas* c = new TCanvas("cRes_B", "Event Plane Resolution vs Impact Parameter", 900, 700);
+    c->SetLeftMargin(0.12);
+    c->SetBottomMargin(0.12);
+
+    hRes_B_Full->SetStats(0);
+    hRes_B_Full->SetMarkerStyle(20);
+    hRes_B_Full->SetMarkerSize(0.8);
+    hRes_B_Full->SetLineWidth(1);
+    hRes_B_Full->SetMarkerColor(kRed+1);
+    hRes_B_Full->SetLineColor(kRed+1);
+    hRes_B_Full->SetTitle("Event Plane Resolution vs Impact Parameter; b [fm]; R = #sqrt{2#LTcos(2#Delta#Psi)#GT}");
+    hRes_B_Full->Draw("E1");
+
+    auto legend = makeLabelBox("Full sEPD Event Plane Resolution");
+    legend->Draw("same");
+
+    c->SaveAs("/Users/rachelkorsunsky/Downloads/research-figures/Pythia_data/res_vs_B_fixed.png");
+}
+
+
+// ----------------- MAIN -----------------
+int main(int argc, char* argv[]) {
+    // ----------------- Argument Handling -----------------
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <job_index> <nEvents>\n";
+        return 1;
+    }
+    
+    int jobID = atoi(argv[1]);
+    Long64_t nEvents = atoll(argv[2]);
+    
+    // ----------------- Create output directory -----------------
+    std::string outputDir = "/Users/rachelkorsunsky/Downloads/research-figures/Pythia_data/";
+    struct stat info;
+    if (stat(outputDir.c_str(), &info) != 0) {
+        std::string command = "mkdir -p " + outputDir;
+        int result = system(command.c_str());
+        if (result == 0) {
+            std::cout << "Created output directory: " << outputDir << std::endl;
+        } else {
+            std::cerr << "Failed to create directory: " << outputDir << std::endl;
+            return 1;
+        }
+    }
+
+    // ----------------- ROOT Style -----------------
+    gStyle->SetOptStat(0);
+    gStyle->SetPadTickX(1);
+    gStyle->SetPadTickY(1);
+    
+    // ----------------- PYTHIA INITIALIZATION -----------------
+    Pythia pythia;
+    pythia.readString("Beams:idA = 1000791970");
+    pythia.readString("Beams:idB = 1000791970");
+    pythia.readString("Beams:frameType = 1");
+    pythia.readString("Beams:eCM = 200.");
+    pythia.readString("Angantyr:CollisionModel = 2");
+    pythia.readString("HeavyIon:SigFitNGen = 0");
+    pythia.readString("HeavyIon:SigFitDefAvNDb = 0.78");
+    pythia.readString("HeavyIon:SigFitDefPar = 1.24,2.38,1.01");
+    pythia.readString("HadronLevel:Hadronize = on");
+    pythia.readString("HadronLevel:Rescatter = on");
+    pythia.readString(Form("Random:seed = %d", 100 + jobID));
+    pythia.readString("Next:numberCount = 1");
+    
+    if (!pythia.init()) {
+        return 1;
+    }
+    
+    // ----------------- Output File -----------------
+    TFile* fout = new TFile(Form("%sAuAu_job%d.root", outputDir.c_str(), jobID), "RECREATE");
+    
+    // ----------------- UPDATED Histogram Definitions with TProfiles -----------------
+    auto hEta_all = new TH1D("hEta_all", "All Charged Particles;#eta;Counts", 100, -6, 6);
+    auto hEta_SEPD = new TH1D("hEta_SEPD", "Particles Reaching sEPD;#eta;Counts", 100, 2.0, 5.0);
+    auto hEta_posZ = new TH1D("hEta_posZ", "Particles Hitting +Z sEPD;#eta;Counts", 100, 2.0, 5.0);
+    auto hEta_negZ = new TH1D("hEta_negZ", "Particles Hitting -Z sEPD;#eta;Counts", 100, -5.0, -2.0);
+    auto hEta_vs_Ring = new TH2F("hEta_vs_Ring", "#eta vs Ring Index;Ring Index;#eta", N_RINGS, -0.5, N_RINGS-0.5, 100, 2.0, 5.0);
+    auto hEta_vs_b = new TH2F("hEta_vs_b", "#eta vs Impact Parameter;b [fm];#eta", 100, 0, 20, 100, 2.0, 5.0);
+    auto hPsi2_posZ = new TH1D("hPsi2_posZ", "Event Plane Angle #Psi_{2} (+Z);#Psi_{2} [rad];Events",  50, -TMath::Pi()/2, TMath::Pi()/2);
+    auto hPsi2_negZ = new TH1D("hPsi2_negZ", "Event Plane Angle #Psi_{2} (-Z);#Psi_{2} [rad];Events", 50, -TMath::Pi()/2, TMath::Pi()/2);
+    auto hPsi2_posZnegZ = new TH2F("hPsi2_posZnegZ", "Event Plane Angle +Z vs -Z;#Psi_{2}^{+Z} [rad];#Psi_{2}^{-Z} [rad]", 50, -TMath::Pi()/2, TMath::Pi()/2, 50, -TMath::Pi()/2, TMath::Pi()/2);
+    auto hPsi2_diff = new TH1D("hPsi2_diff", "#Psi_{2} Difference;#Psi_{2}^{+Z} - #Psi_{2}^{-Z} [rad];Events", 50, -TMath::Pi()/2, TMath::Pi()/2);
+    auto hRingOcc    = new TH1D("hRingOcc", "EPD Ring Occupancy;Ring radius [cm];Counts", N_RINGS, EPD_R[0], EPD_R[N_RINGS-1]);
+    auto hRingOccIndex = new TH1D("hRingOccIndex", "EPD Ring Occupancy by Index;Ring Index;Counts", N_RINGS, -0.5, N_RINGS - 0.5);
+    auto hCos2PsiDiff = new TH1D("hCos2PsiDiff", "cos(2#Delta#Psi);cos(2#Delta#Psi);Events", 100, -1, 1);
+    auto hPsiDiff = new TH1D("hPsiDiff", "#Psi_{2} Difference;#Psi_{2}^{+Z} - #Psi_{2}^{-Z} [rad];Events", 50, -TMath::Pi()/2, TMath::Pi()/2);
+    auto hRes_B = new TProfile("hRes_B", "Resolution vs Impact Parameter;b [fm];#sqrt{2#LTcos(2#Delta#Psi)#GT}", 200, 0, 20);
+    auto hRes_Ring = new TProfile("hRes_Ring", "EPD Resolution vs Radius;Radius [cm];#sqrt{2#LTcos(2#Delta#Psi)#GT}", N_RINGS, EPD_R[0], EPD_R[N_RINGS-1]);
+    auto hEventRes = new TH1D("hEventRes", "Per-event cos(2#Delta#Psi);cos(2#Delta#Psi);Events", 100, -1, 1);
+    auto hResolution = new TH1D("hResolution", "Event Plane Resolution;R;Events", 100, 0, 1);
+    auto hParticlesPerRing_pos = new TH1D("hParticlesPerRing_pos", "Particles per Ring (+Z);Ring Index;Particle Count",  N_RINGS, -0.5, N_RINGS -0.5);
+    auto hParticlesPerRing_neg = new TH1D("hParticlesPerRing_neg", "Particles per Ring (-Z);Ring Index;Particle Count",  N_RINGS, -0.5, N_RINGS -0.5);
+    auto hB = new TH1D("hB", "Impact Parameter Distribution;b [fm];Counts", 200, 0, 20);
+    auto pRes_cent = new TProfile("pRes_cent", "Resolution vs Centrality;Centrality [%];#sqrt{2#LTcos(2#Delta#Psi)#GT}", 10, 0, 100);
+
+    // --- Per-Ring Resolution vs Centrality ---
+    std::vector<TProfile*> pRes_cent_ring(N_RINGS);
+    for (int r = 0; r < N_RINGS; r++) {
+        pRes_cent_ring[r] = new TProfile(Form("pRes_cent_ring_%d", r),
+            Form("Resolution vs Centrality (Ring %d);Centrality [%%];#sqrt{2#LTcos(2#Delta#Psi)#GT}", r),
+            10, 0, 100);
+    }
+
+    // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // +++++++----------------- EVENT LOOP -----------------+++++++++++
+    // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+    auto start = std::chrono::high_resolution_clock::now();
+    
+    // Enhanced resolution tracking with error propagation
+    double sumCos2PsiAB = 0.0;
+    double sumCos2PsiAB2 = 0.0; // For error calculation
+    long nEvtRes = 0;
+    
+    // Ring-specific resolution tracking
+    double sumCos2Ring[N_RINGS]  = {0.0};
+    double sumCos2Ring2[N_RINGS] = {0.0};
+    long nEventsRing[N_RINGS]  = {0};
+
+    
+    int zeroPsi2_posZ_count = 0;
+    int zeroPsi2_negZ_count = 0;
+    std::vector<Long64_t> zeroPsi2_posZ_events;
+    std::vector<Long64_t> zeroPsi2_negZ_events;
+    
+    
+    Long64_t printInterval = nEvents / 1000; //progress updates every 0.1%
+    if (printInterval == 0) printInterval = 1;
+    
+    std::cout << "Starting event generation for job " << jobID << " with " << nEvents << " events\n";
+    
+    for (Long64_t i = 0; i < nEvents; ++i) {
+        if (!pythia.next()) continue;
+
+        if (i > 0 && i % printInterval == 0) {
+            auto now = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed = now - start;
+            double eventsPerSec = i / elapsed.count();
+            double remainingEvents = nEvents - i;
+            double estimatedTimeRemaining = remainingEvents / eventsPerSec;
+            
+            int hours = (int)(estimatedTimeRemaining / 3600);
+            int minutes = (int)((estimatedTimeRemaining - hours * 3600) / 60);
+            int seconds = (int)(estimatedTimeRemaining - hours * 3600 - minutes * 60);
+            double percentComplete = 100.0 * i / nEvents;
+            
+            std::cout << "Progress: " << percentComplete << "% (" << i << "/" << nEvents 
+                      << ") | Est. time remaining: " << hours << "h " << minutes 
+                      << "m " << seconds << "s" << std::endl;
+        }
+        
+        int nCh = 0;
+        double b = pythia.info.hiInfo->b(); // FIXED: Declare 'b' here
+
+        hB->Fill(b); 
+
+        std::vector<double> eventEtas;
+        
+        double Qx2_pos = 0, Qy2_pos = 0;
+        double Qx2_neg = 0, Qy2_neg = 0;
+        int nEPD_pos = 0;
+        int nEPD_neg = 0;
+        
+        // Store ring-specific Q-vectors and particle counts
+        double Qx2_pos_rings[N_RINGS] = {0.0};
+        double Qy2_pos_rings[N_RINGS] = {0.0};
+        double Qx2_neg_rings[N_RINGS] = {0.0};
+        double Qy2_neg_rings[N_RINGS] = {0.0};
+        int particles_pos_rings[N_RINGS] = {0};
+        int particles_neg_rings[N_RINGS] = {0};
+            
+        for (int j = 0; j < pythia.event.size(); ++j) {
+            const Particle& particle = pythia.event[j];
+            if (!particle.isFinal()) continue;
+            if (!particle.isCharged()) continue;
+            
+            double eta = particle.eta();
+            
+            // Count all charged particles for Nch
+            if (particle.isCharged()) {
+                nCh++;
+                eventEtas.push_back(eta);
+            }
+            
+            //----------------- Momentum definitions -----------------
+            double px = particle.px(), py = particle.py(), pz = particle.pz();
+            double pt = std::sqrt((px * px) + (py * py));
+            
+            double z;
+            if (pz > 0) {
+                z = EPD_Z;
+                nEPD_pos++;
+            } else {
+                z = -EPD_Z;
+                nEPD_neg++;
+            }
+            
+            double t = z / pz;
+            if (t < 0) continue;
+            double x = t * px, y = t * py; //my parametrization
+            double r = std::sqrt((x * x) + (y * y));
+            double phi = std::atan2(y, x); //equation for phi
+            
+             //----------------- utilization of ring function -----------------
+            int ring = findRing(r);
+            if (ring >= 0) {
+                hRingOcc->Fill(r); 
+                hRingOccIndex->Fill(ring); 
+                    if (pz > 0) {
+                        hParticlesPerRing_pos->Fill(ring);
+                    } else {
+                        hParticlesPerRing_neg->Fill(ring);
+                    } 
+            }
+
+            if (ring < 0) continue;//error checking
+
+
+
+            hEta_all->Fill(eta);
+
+            if (ring >= 0) {
+                hEta_SEPD->Fill(eta);
+                if (pz > 0) hEta_posZ->Fill(eta);
+                if (pz < 0) hEta_negZ->Fill(eta);
+                hEta_vs_Ring->Fill(ring, eta);
+                hEta_vs_b->Fill(b, eta);
+            }
+
+             //----------------- Q vector accumulation -----------------
+            if (pz > 0) {
+                Qx2_pos += pt * cos(2 * phi);
+                Qy2_pos += pt * sin(2 * phi);
+                
+                 //----------------- Store ring-specific Q-vectors ----------------- 
+                Qx2_pos_rings[ring] += pt * cos(2 * phi);
+                Qy2_pos_rings[ring] += pt * sin(2 * phi);
+                particles_pos_rings[ring]++;
+            } else if (pz < 0) { //forward and backward partitcles differentiation
+                Qx2_neg += pt * cos(2 * phi);
+                Qy2_neg += pt * sin(2 * phi);
+                
+               
+                Qx2_neg_rings[ring] += pt * cos(2 * phi);
+                Qy2_neg_rings[ring] += pt * sin(2 * phi);
+                particles_neg_rings[ring]++;
+            }
+        }
+        
+        // ----------------- Event plane angle calculation ----------------- 
+        double psi2_pos = 0.5 * atan2(Qy2_pos, Qx2_pos);
+        double psi2_neg = 0.5 * atan2(Qy2_neg, Qx2_neg);
+        double Qx2_full = Qx2_pos + Qx2_neg;     
+        double Qy2_full = Qy2_pos + Qy2_neg;
+        double psi2_full = 0.5 * atan2(Qy2_full, Qx2_full);
+        double psi_true = pythia.info.hiInfo->phi();  // Reaction plane truth from Pythia
+        
+        // Calculate Psi difference and resolution
+        double psi_diff = angleDifferenceHalfPi(psi2_pos, psi2_neg);
+        double cos2diff = cos(2.0 * psi_diff);
+        double R_event = (cos2diff > 0) ? sqrt(2 * cos2diff) : 0.0;
+
+        // --- Better centrality binning from impact parameter ---
+        int centBin = getCentralityBin(b);
+        double centPercent = centBin * 10.0 + 5.0;   // bin centers: 5, 15, 25 ...
+        pRes_cent->Fill(centPercent, R_event);
+
+        // FILL TPROFILES - these now calculate means automatically
+        hRes_B->Fill(b, R_event);           // Mean resolution vs b
+
+        // Fill resolution histograms
+        hPsiDiff->Fill(psi_diff);
+        hCos2PsiDiff->Fill(cos2diff);
+        hEventRes->Fill(R_event);
+        
+        sumCos2PsiAB += cos2diff;
+        sumCos2PsiAB2 += cos2diff * cos2diff;
+        nEvtRes++;
+        
+        // Calculate and fill ring-by-ring resolution with minimum statistics requirement
+        for (int ring = 0; ring < N_RINGS; ++ring) {
+
+            
+            double psi2_pos_ring = 0.5 * atan2(Qy2_pos_rings[ring], Qx2_pos_rings[ring]);
+            double psi2_neg_ring = 0.5 * atan2(Qy2_neg_rings[ring], Qx2_neg_rings[ring]);  
+            double dpsi_ring = angleDifferenceHalfPi(psi2_pos_ring, psi2_neg_ring);
+            double c_ring = cos(2.0 * dpsi_ring);
+            double R_event_ring = (c_ring > 0) ? sqrt(2 * c_ring) : 0.0;
+            pRes_cent_ring[ring]->Fill(centPercent, R_event_ring);
+        }
+        
+        // Impact parameter cut
+        if (b < 6 || b > 8) continue;
+
+
+        // Check for zero psi2 values
+        if (std::abs(psi2_pos) < 1e-10) {
+            zeroPsi2_posZ_count++;
+            zeroPsi2_posZ_events.push_back(i);
+            std::cout << "WARNING: Zero psi2_pos at event " << i 
+                      << " | Qx2_pos = " << Qx2_pos << " Qy2_pos = " << Qy2_pos 
+                      << " | nEPD_pos = " << nEPD_pos << " nCh = " << nCh 
+                      << " b = " << b << std::endl;
+        }
+        
+        if (std::abs(psi2_neg) < 1e-10) {
+            zeroPsi2_negZ_count++;
+            zeroPsi2_negZ_events.push_back(i);
+            std::cout << "WARNING: Zero psi2_neg at event " << i 
+                      << " | Qx2_neg = " << Qx2_neg << " Qy2_neg = " << Qy2_neg 
+                      << " | nEPD_neg = " << nEPD_neg << " nCh = " << nCh 
+                      << " b = " << b << std::endl;
+        }
+        
+        hPsi2_posZ->Fill(psi2_pos);
+        hPsi2_negZ->Fill(psi2_neg);
+        hPsi2_posZnegZ->Fill(psi2_pos, psi2_neg);
+        hPsi2_diff->Fill(psi_diff);
+    
+    // ----------------- Calculate Poisson Errors for Particle Count Histograms -----------------
+    for (int ring = 0; ring < N_RINGS; ++ring) {
+        // ---- +Z side ----
+        double N_pos = hParticlesPerRing_pos->GetBinContent(ring + 1);
+        double poisson_err_pos = sqrt(N_pos);
+        hParticlesPerRing_pos->SetBinError(ring + 1, poisson_err_pos);
+        
+        // ---- -Z side ----
+        double N_neg = hParticlesPerRing_neg->GetBinContent(ring + 1);
+        double poisson_err_neg = sqrt(N_neg);
+        hParticlesPerRing_neg->SetBinError(ring + 1, poisson_err_neg);
+    }
+    
+   
+}// END OF EVENT LOOP
+
+
+// -------------------- FINAL RESOLUTION SUMMARY AFTER EVENT LOOP -------------------- //replace with if statements
+std::cout << "=== RING STATISTICS ===" << std::endl;
+for (int ring = 0; ring < N_RINGS; ++ring) {
+    std::cout << "Ring " << ring << ": " << nEventsRing[ring] << " events" << std::endl;
+}
+
+std::cout << "=== ZERO Ψ2 SUMMARY ===" << std::endl;
+std::cout << "Events with psi2_pos = 0: " << zeroPsi2_posZ_count << std::endl;
+std::cout << "Events with psi2_neg = 0: " << zeroPsi2_negZ_count << std::endl;
+
+
+// ----------------- Convert TProfile values to true resolution -----------------
+std::cout << "\nConverting <cos(2ΔΨ)> to resolution (sqrt(2<x>)) in hRes_B_Sqrt...\n";
+
+
+
+    // ----------------- Plotting -----------------
+    auto drawAndSave = [&](TH1* h, const char* name, const char* label3, const char* drawOpt = nullptr) {
+        TCanvas* c = new TCanvas(name, name, 900, 700);
+        c->SetLeftMargin(0.12);
+        c->SetRightMargin(0.12);
+        c->SetTopMargin(0.08);
+        c->SetBottomMargin(0.12);
+        h->SetStats(0);
+
+        if (drawOpt) {
+            h->Draw(drawOpt);
+        } else if (h->InheritsFrom(TH2::Class())) {
+            h->Draw("COLZ");
+        } else {
+            h->Draw("HIST E1");
+        }
+
+        if (label3) makeLabelBox(label3)->Draw("same");
+
+        c->SaveAs(Form("%s%s.png", outputDir.c_str(), name));
+        delete c;
+    };
+
+    // ----------------- Write Output -----------------
+    fout->cd();
+    hPsi2_posZ->Write();
+    hPsi2_negZ->Write();
+    hPsi2_posZnegZ->Write();
+    hPsi2_diff->Write();
+    hCos2PsiDiff->Write();
+    hPsiDiff->Write();
+    hRes_B->Write();
+    hRes_Ring->Write();
+    hEventRes->Write();
+    hResolution->Write();
+    hParticlesPerRing_pos->Write();
+    hParticlesPerRing_neg->Write();
+    pRes_cent->Write();
+    hB->Write();
+
+    for (int r = 0; r < N_RINGS; r++) {
+        pRes_cent_ring[r]->Write();
+    }
+
+    fout->Write();
+
+    // Other plots with corrected labels
+    drawAndSave(hEta_all, "eta_all", "All Charged Particles", "HIST");
+    drawAndSave(hEta_SEPD, "eta_sepd", "Particles Hitting sEPD", "HIST");
+    drawAndSave(hEta_posZ, "eta_posZ", "+Z sEPD Hits", "HIST");
+    drawAndSave(hEta_negZ, "eta_negZ", "-Z sEPD Hits", "HIST");
+    drawAndSave(hEta_vs_Ring, "eta_vs_ring", "η vs Ring Index", "COLZ");
+    drawAndSave(hEta_vs_b, "eta_vs_b", "η vs Impact Parameter", "COLZ");
+    drawAndSave(hPsi2_posZ, "Event_Plane_Angle_posZ", "All charged particles for Positive Z", "HIST");
+    drawAndSave(hPsi2_negZ, "Event_Plane_Angle_negZ", "All charged particles for Negative Z", "HIST");
+    drawAndSave(hPsi2_posZnegZ, "Event_Plane_Angle_posZ_vs_negZ", "For all charged particles hitting SEPD", "COLZ");
+    drawAndSave(hPsi2_diff, "EPD_Differences", "Impact Parameter 6-8 fm", "HIST");
+    drawAndSave(hRes_B, "res_vs_B", "Impact Parameter 6-8 fm", "E1");
+    drawAndSave(hRes_Ring, "resolution_per_ring", "Resolution per EPD Ring", "E1");
+    drawAndSave(hEventRes, "event_resolution", "Per-event cos(2ΔΨ) distribution", "HIST");
+    drawAndSave(hCos2PsiDiff, "cos2psi_diff", "cos(2ΔΨ) distribution", "HIST");
+    drawAndSave(hPsiDiff, "psi_diff", "Ψ_{2} difference distribution", "HIST");
+    drawAndSave(hResolution, "resolution", "Event plane resolution distribution", "HIST");
+    drawAndSave(hRes_Ring, "resolution_per_radius", "Resolution vs Radius", "E1");
+    drawAndSave(hRingOcc, "ring_occupancy", nullptr, "HIST");
+    drawAndSave(hRingOccIndex, "ring_occupancy_indexes", nullptr, "HIST");
+    drawAndSave(pRes_cent, "res_vs_centrality", "Resolution vs Centrality", "E1");
+    drawAndSave(hB, "impact_parameter_distribution", "Impact Parameter Distribution", "HIST");
+
+    // Save centrality vs resolution plots for each ring
+for (int r = 0; r < N_RINGS; r++) {
+    drawAndSave(pRes_cent_ring[r],
+        Form("res_vs_centrality_ring_%d", r),
+        Form("Resolution vs Centrality (Ring %d)", r),
+        "E1");
+}
+
+    
+
+
+// Convert pRes_cent values to true resolution //why and how
+for (int i = 1; i <= pRes_cent->GetNbinsX(); i++) {
+    double mean = pRes_cent->GetBinContent(i);
+    double res = (mean > 0) ? sqrt(2 * mean) : 0.0;
+    pRes_cent->SetBinContent(i, res);
+}
+
+// Convert per-ring centrality TProfiles to true resolution
+for (int r = 0; r < N_RINGS; r++) {
+    for (int i = 1; i <= pRes_cent_ring[r]->GetNbinsX(); i++) {
+        double mean = pRes_cent_ring[r]->GetBinContent(i);
+        double res = (mean > 0) ? sqrt(2 * mean) : 0.0;
+        pRes_cent_ring[r]->SetBinContent(i, res);
+    }
+}
+
+
+    fout->Close();
+
+    std::cout << "\n=== OUTPUT SUMMARY ===" << std::endl;
+    std::cout << "ROOT file saved to: " << outputDir << "AuAu_job" << jobID << ".root" << std::endl;
+    std::cout << "PNG plots saved to: " << outputDir << std::endl;
+
+    return 0;
+}
