@@ -1,0 +1,100 @@
+#include "TFile.h"
+#include "TChain.h"
+#include "TTree.h"
+#include "TH1D.h"
+#include <iostream>
+#include <vector>
+#include <string>
+using namespace std;
+int N_RINGS = 1;
+
+int main() {
+
+    TChain chain("Events");
+    int nAdded = chain.Add("data/events_job*.root");
+    if (nAdded == 0) {
+        std::cerr << "ERROR: No input files matched data/events_job*.root\n";
+        return 1;
+    }
+    std::cout << "Loaded files: " << nAdded << "\n";
+
+    // Pseudorapidity window
+    const double A = 2.03;
+    const double B = 4.93;
+
+
+
+    // Branch pointer
+    vector<double>* eta = nullptr; 
+    chain.SetBranchAddress("eta", &eta);
+
+
+    // Event loop
+    Long64_t nEntries = chain.GetEntries();
+    std::cout << "Total events: " << nEntries << "\n";
+     // Write output
+    TFile* fout = new TFile("analysis_simpler_output.root", "RECREATE");
+
+
+
+      // Histograms
+        TH1D* hNeg = new TH1D(
+             "hHitsNeg",
+             "Charged hits per event: negative side;Number of hits in -4.93 < #eta < -2.03;Events",
+             1000, -0.5, 999.5 //number of bins, starting bin, ending bin
+         );
+
+       
+        TH1D* hPos = new TH1D(
+            "hHitsPos", 
+            "Charged hits per event: positive side;Number of hits in 2.03 < #eta < 4.93;Events", 
+            1000, -0.5, 999.5
+        );
+
+        TH1D* hTot = new TH1D(
+            "hHitsTot", 
+            "Charged hits per event: both sides;Total number of hits in |#eta| #in [2.03, 4.93];Events", 
+            1000, -0.5, 999.5
+        );
+    
+
+
+
+
+   
+    for (Long64_t i = 0; i < nEntries; i++) { //loop for all events
+        chain.GetEntry(i); 
+
+        int nNeg = 0;
+        int nPos = 0;
+        int nTot = 0;
+
+        for (size_t j = 0; j < eta->size(); j++) { //particle loop where number of particles is the size of the eta vector
+                    double eta_particle = eta->at(j); //define eta at a specific particle
+
+            if (eta_particle >= -B && eta_particle <= -A) nNeg++; //if eta for a specific particle is in the bounds of -2.03 to -4.93, its negative
+            if (eta_particle >=  A && eta_particle <=  B) nPos++; //if eta for a specific particle is in the bounds of 2.03 to 4.93, its positive
+            
+        }
+        
+        nTot = nNeg + nPos;
+                
+        hNeg->Fill(nNeg);
+        hPos->Fill(nPos);
+        hTot->Fill(nTot);
+    }
+    
+    
+    fout->cd();
+
+    hNeg->Write();
+    hPos->Write();
+    hTot->Write();
+
+
+
+
+    fout->Close();
+    std::cout << "\nYour file, analysis_simpler_output.root, has now been written\n";
+    return 0;
+}
