@@ -1,0 +1,406 @@
+#include "TFile.h"
+#include "TChain.h"
+#include "TTree.h"
+#include "TH1D.h"
+#include "TH2F.h"
+#include <iostream>
+#include <vector>
+#include <string>
+#include <algorithm>
+#include <cmath>
+#include "TMath.h"
+#include "TProfile.h"
+
+using namespace std;
+bool useOtherFile = true; //flag
+int N_RINGS = 1; //for defining rings in the future
+
+const int NROWS = 15; //15 rows in my chart corresponding to segmented rings
+
+int main() {
+
+    //TFile* file = nullptr;
+
+    //TTree* tree = nullptr;
+    TChain* chain = nullptr; //only using tchains this time
+
+  
+    vector<float>* eta = nullptr; //using floats instead of doubles
+    vector<float>* phi = nullptr;
+
+    if (useOtherFile) {
+        
+        chain = new TChain("events");
+        int nAdded = chain->Add("angantyr_events_job1.root"); 
+        nAdded += chain->Add("angantyr_events_job3.root"); //for adding multiple files
+        if (nAdded == 0) {std::cerr << "ERROR: No input files found\n"; return 1;} //error checking
+        std::cout << "Loaded files: " << nAdded << "\n"; 
+        chain->SetBranchAddress("eta", &eta); //linking the valuable eta to a column in my data file so my code knows what eta is
+        chain->SetBranchAddress("phi", &phi);
+
+    } else {
+        chain = new TChain("Events");
+        int nAdded = chain->Add("data/events_job*.root");
+        if (nAdded == 0) {std::cerr << "ERROR: No input files matched data/events_job*.root\n"; return 1; } //error checking
+        std::cout << "Loaded files: " << nAdded << "\n";
+
+        // Branch pointers for my TChain
+        chain->SetBranchAddress("eta", &eta); //named same to avoid confusion 
+        chain->SetBranchAddress("phi", &phi);
+    }
+
+    //Long64_t nEntries = if(useOtherFile){} tree->GetEntries() : chain->GetEntries(); //if using Jamie's file, use ttree; if not, use ttchain
+    Long64_t nEntries = chain->GetEntries(); 
+    std::cout << "Total events: " << nEntries << "\n"; //number of events
+
+    // Pseudorapidity window ; separate variables for events vs the detector
+
+    //we define eta to be these eta ranges to find the range of multiplicity
+    const double eta_A_good_events = 2.03;
+    const double eta_B_good_events = 4.93;
+
+    //we use the selected multiplicity range to calculate various quantities of the detector
+    const double eta_A_detector = 2.03; //in specific scenario, they are the same. not always true 
+    const double eta_B_detector = 4.93;
+
+    //third detector C: using central region
+    const double eta_C_min = -2.0; //horizontal detector from jamie's drawing
+    const double eta_C_max =  2.0;
+
+    double eta_i[NROWS] = { //eta initial bounds array for sepd
+        4.93233, 4.26131, 3.86352, 3.57992, 3.30993,
+        3.09792, 2.92347, 2.77535, 2.64676, 2.53323,
+        2.43168, 2.33973, 2.25606, 2.17925, 2.10832
+    };
+
+    double eta_f[NROWS] = { //eta final bounds array for sepd
+        4.26131, 3.86352, 3.57992, 3.30993, 3.09792,
+        2.92347, 2.77535, 2.64676, 2.53323, 2.43168,
+        2.33973, 2.25606, 2.17925, 2.10832, 2.04247
+    };
+
+    double rad_i[NROWS] = { //radius initial bounds array for sepd
+        4.6, 9, 13.4, 17.8, 23.33, 28.86, 34.39, 
+        39.92, 45.45, 50.98, 56.51, 62.05, 67.58, 
+        73.11, 78.64
+    };
+
+    double rad_f[NROWS] = { //radius final bounds array for sepd
+        9, 13.4, 17.8, 23.33, 28.86, 34.39, 39.92, 
+        45.45, 50.98, 56.51, 62.05, 67.58, 73.11, 
+        78.64, 84.17
+    };
+
+    TFile* fout = new TFile("analysis_simpler_output.root", "RECREATE"); //create and name my root file this
+
+    //defining all my histograms
+    TH1D* hNeg = new TH1D("hHitsNeg","Charged hits per event: negative side;Number of hits in -4.93 < #eta < -2.03;Events",1950, -0.5, 1949.5);  
+    TH1D* hPos = new TH1D("hHitsPos", "Charged hits per event: positive side;Number of hits in 2.03 < #eta < 4.93;Events", 1950, -0.5, 1949.5);
+    TH1D* hTot = new TH1D("hHitsTot", "Charged hits per event: both sides;Total number of hits in |#eta| #in [2.03, 4.93];Events", 3500, -0.5, 3499.5);
+    TH1D* hQx_pos = new TH1D("hQx_pos", "Qx +Z", 200, -500, 500); //number of bins, starting bin, ending bin
+    TH1D* hQy_pos = new TH1D("hQy_pos", "Qy +Z", 200, -500, 500);
+    TH1D* hQx_neg = new TH1D("hQx_neg", "Qx -Z", 200, -500, 500);
+    TH1D* hQy_neg = new TH1D("hQy_neg", "Qy -Z", 200, -500, 500);
+    TH1D* hQx_C = new TH1D("hQx_C", "Qx C", 200, -500, 500);
+    TH1D* hQy_C = new TH1D("hQy_C", "Qy C", 200, -500, 500);
+    TH1D* hPsi2_pos = new TH1D("hPsi2_pos", "Psi2 +Z", 100, -TMath::Pi()/2, TMath::Pi()/2);
+    TH1D* hPsi2_neg = new TH1D("hPsi2_neg", "Psi2 -Z", 100, -TMath::Pi()/2, TMath::Pi()/2);
+    TH1D* hPsi2_C   = new TH1D("hPsi2_C",   "Psi2 C",  100, -TMath::Pi()/2, TMath::Pi()/2);
+    TH2F* hPsi2_posZnegZ = new TH2F("hPsi2_posZnegZ", "#Psi_{2}^{+Z} vs #Psi_{2}^{-Z};#Psi_{2}^{+Z};#Psi_{2}^{-Z}", 50, -TMath::Pi()/2, TMath::Pi()/2, 50, -TMath::Pi()/2, TMath::Pi()/2);
+    TH1D* hPsiDiff = new TH1D("hPsiDiff", "#Delta#Psi = #Psi_{2}^{+Z} - #Psi_{2}^{-Z};#Delta#Psi;Events", 100, -TMath::Pi()/2, TMath::Pi()/2);
+    TH1D* hCos2PsiDiff = new TH1D("hCos2PsiDiff","cos(2(#Psi_{2}^{+Z} - #Psi_{2}^{-Z}));cos(2#Delta#Psi);Events", 100, -1.0, 1.0);
+    TH1D* hEventRes = new TH1D("hEventRes","Event Plane Resolution;Quantity;Value",1, 0.5, 1.5);
+    TH1D* hEventRes_rows = new TH1D("hEventRes_rows","Event Plane Resolution by row (3 detector);Row;Resolution",NROWS, 0.5, NROWS + 0.5);
+
+    //these are just QA histograms for the old 2-detector row difference
+    TH1D* hCos2PsiDiff_rows[NROWS];
+    for (int r = 0; r < NROWS; r++) { //this creates 15 histograms for cos2psi
+        hCos2PsiDiff_rows[r] = new TH1D(
+            Form("hCos2PsiDiff_row_%d", r + 1),
+            Form("cos(2(#Psi_{2}^{A} - #Psi_{2}^{B})) row %d;cos(2#Delta#Psi);Events", r + 1),
+            100, -1.0, 1.0
+        );
+    }
+
+    //for the three detector method, make histograms of the cosine terms and use ROOT to get mean and mean error
+    TH1D* hCosAB_rows[NROWS];
+    TH1D* hCosAC_rows[NROWS];
+    TH1D* hCosBC_rows[NROWS];
+
+    for (int r = 0; r < NROWS; r++) {
+        hCosAB_rows[r] = new TH1D(
+            Form("hCosAB_row_%d", r + 1),
+            Form("cos(2(#Psi_{A}-#Psi_{B})) row %d;cos(2(#Psi_{A}-#Psi_{B}));Events", r + 1),
+            100, -1.0, 1.0
+        );
+
+        hCosAC_rows[r] = new TH1D(
+            Form("hCosAC_row_%d", r + 1),
+            Form("cos(2(#Psi_{A}-#Psi_{C})) row %d;cos(2(#Psi_{A}-#Psi_{C}));Events", r + 1),
+            100, -1.0, 1.0
+        );
+
+        hCosBC_rows[r] = new TH1D(
+            Form("hCosBC_row_%d", r + 1),
+            Form("cos(2(#Psi_{B}-#Psi_{C})) row %d;cos(2(#Psi_{B}-#Psi_{C}));Events", r + 1),
+            100, -1.0, 1.0
+        );
+    }
+
+    Long64_t nSelected = 0; //for printing out number of selected events
+    Long64_t nSelected_rows[NROWS] = {0}; //for printing out once we have divided the eta range into 15 bins   
+
+//EVENT LOOP!!!!!!
+//EVENT LOOP!!!!!!
+//EVENT LOOP!!!!!!
+//EVENT LOOP!!!!!!
+
+    for (Long64_t i = 0; i < nEntries; i++) { //loop for all events; lots of events so we use Long64_t variable type which hold large integers
+        //if (useOtherFile) { tree->GetEntry(i); }else {  chain->GetEntry(i);} //left over from a previous ttree file
+        chain->GetEntry(i);
+
+        if (!eta || !phi) continue;
+        if (eta->size() != phi->size()) continue; //if the number of etas and phis arent the same, the number of particles aren't the same so skip event
+
+        size_t nPart = eta->size(); //nPart = number of particles determined by number of eta entries in vector
+        
+        //define variables before particle loops so no scope issues
+        int nNeg = 0;
+        int nPos = 0;
+        int nTot = 0;
+        double Qx_pos = 0.0, Qy_pos = 0.0;
+        double Qx_neg = 0.0, Qy_neg = 0.0;
+        double Qx_C_event = 0.0, Qy_C_event = 0.0; //Q vector for third detector C
+        double psi2_pos = 0.0;
+        double psi2_neg = 0.0;
+        double psi2_C_event = 0.0;
+
+        double Qx_pos_rows[NROWS] = {0.0}; //one eta has been segmented; using arrays where NROWS = 15
+        double Qy_pos_rows[NROWS] = {0.0}; //need to initialize arrays to 0
+        double psi2_pos_rows[NROWS] = {0.0};
+
+        for (size_t j = 0; j < nPart; j++) { //particle loop where number of particles is the size of the eta vector
+            double eta_particle = eta->at(j);
+
+            if (eta_particle >= -eta_B_good_events && eta_particle <= -eta_A_good_events) nNeg++; //if eta for a specific particle is in the bounds of -2.03 to -4.93, its negative
+            if (eta_particle >=  eta_A_good_events && eta_particle <=  eta_B_good_events) nPos++; //if eta for a specific particle is in the bounds of 2.03 to 4.93, its positive
+        }
+
+        nTot = nNeg + nPos; //calculate total "good" events of both the negative and positive sides of the detector
+        if (!(nTot > 1500 && nTot < 2000)) continue; //if nTot isnt in the selected range, skip the event
+        nSelected++; //each time an event passes the cut, increment it
+
+        for (size_t l = 0; l < nPart; l++) { //particle loop for calculations like Qx Qy
+            double eta_detector = eta->at(l); //get eta from this specific particle and call it eta detector
+            double phi_detector = phi->at(l); //get phi from this specific particle and call it phi detector
+
+            //full +Z detector, kept for your original QA plots
+            if (eta_detector >= eta_A_detector && eta_detector <= eta_B_detector) {
+                Qx_pos += std::cos(2.0 * phi_detector); //Qx pos is the accumulation of the cos 2phi
+                Qy_pos += std::sin(2.0 * phi_detector); //Qy pos is the accumulation of the sin 2phi
+            }
+
+            //full -Z detector = B in the three detector method
+            if (eta_detector >= -eta_B_detector && eta_detector <= -eta_A_detector) {
+                Qx_neg += std::cos(2.0 * phi_detector); //Qx neg is the accumulation of the cos 2phi
+                Qy_neg += std::sin(2.0 * phi_detector); //Qy neg is the accumulation of the sin 2phi
+            }
+
+            //central detector = C in the three detector method
+            if (eta_detector >= eta_C_min && eta_detector <= eta_C_max) { //need to make sure it's in the exact eta range -2 to 2 so statistically independant from other eta ranges
+                Qx_C_event += std::cos(2.0 * phi_detector);  //same formulas
+                Qy_C_event += std::sin(2.0 * phi_detector);
+            }
+
+            for (int r = 0; r < NROWS; r++) { //for each particle of every event, we make calculations for each segment of eta 
+                double etaMin = std::min(eta_i[r], eta_f[r]); //decide which eta is smaller
+                double etaMax = std::max(eta_i[r], eta_f[r]); //decide which eta is bigger
+
+                // +Z side row = A in the three detector method
+                if (eta_detector >= etaMin && eta_detector <= etaMax) { //if eta is greater than the lower bound and less than the upper bound
+                    Qx_pos_rows[r] += std::cos(2.0 * phi_detector); //we take the sum of the Q vectors individually for all 15 sections
+                    Qy_pos_rows[r] += std::sin(2.0 * phi_detector);
+                }
+            }
+        }
+
+        //only calculate event plane angles after the Q vectors have already been accumulated
+        if (Qx_pos != 0.0 || Qy_pos != 0.0) psi2_pos = 0.5 * std::atan2(Qy_pos, Qx_pos);
+        if (Qx_neg != 0.0 || Qy_neg != 0.0) psi2_neg = 0.5 * std::atan2(Qy_neg, Qx_neg);
+        if (Qx_C_event != 0.0 || Qy_C_event != 0.0) psi2_C_event = 0.5 * std::atan2(Qy_C_event, Qx_C_event);
+
+        double deltaPsi = psi2_pos - psi2_neg;  
+
+        // wrap angle into [-pi/2, pi/2]; should consider making it into a function at some point
+        while (deltaPsi >  TMath::Pi()/2) deltaPsi -= TMath::Pi(); //if delta Psi is greater than pi/2, subtract it from pi
+        while (deltaPsi < -TMath::Pi()/2) deltaPsi += TMath::Pi(); //if delta Psi is less than pi/2, add it to pi
+
+        double cos2DeltaPsi = std::cos(2.0 * deltaPsi); //cos is neg at pi/4, then there may not be much correlation between particles because delta psi is larger? 
+        //if the two angles are close together, lots of correlation and positive overall value so positive resolution
+        //any value larger than pi/2 will be negative
+        //cos is positive when psi is very small around 0
+        
+
+        for (int r = 0; r < NROWS; r++) {
+            
+           
+            psi2_pos_rows[r] = 0.5 * std::atan2(Qy_pos_rows[r], Qx_pos_rows[r]); //A for this row
+
+          
+           
+            double deltaPsi_row = psi2_pos_rows[r] - psi2_neg;
+
+            while (deltaPsi_row >=  TMath::Pi()/2) deltaPsi_row -= TMath::Pi(); //if delta Psi is greater than pi/2, subtract it from pi
+            while (deltaPsi_row <= -TMath::Pi()/2) deltaPsi_row += TMath::Pi(); //if delta Psi is less than pi/2, add it to pi
+            double cos2DeltaPsi_row = std::cos(2.0 * deltaPsi_row);
+
+            hCos2PsiDiff_rows[r]->Fill(cos2DeltaPsi_row); 
+            nSelected_rows[r]++; //counter for the amount of selected events for my rows array
+       
+
+            //A = +row r, B = full -Z detector, C = central detector
+            //for the 3 detector method, all three Q vectors need to exist or else atan2(0,0) would fake a psi of 0
+
+            double psiA = psi2_pos_rows[r]; //specific ring psi value for positive detector
+            double psiB = psi2_neg; //entire negative detector
+            double psiC = psi2_C_event; //psi of my little eta range
+
+            double cosAB = std::cos(2.0 * (psiA - psiB)); //compute the different cosines
+            double cosAC = std::cos(2.0 * (psiA - psiC));
+            double cosBC = std::cos(2.0 * (psiB - psiC));
+
+            hCosAB_rows[r]->Fill(cosAB); //fill histograms and let ROOT get the mean and mean error later
+            hCosAC_rows[r]->Fill(cosAC);
+            hCosBC_rows[r]->Fill(cosBC);
+        }
+
+        //fill each graph with values event by event 
+        hNeg->Fill(nNeg);
+        hPos->Fill(nPos);
+        hTot->Fill(nTot);
+        hQx_pos->Fill(Qx_pos);
+        hQy_pos->Fill(Qy_pos);
+        hQx_neg->Fill(Qx_neg);
+        hQy_neg->Fill(Qy_neg);
+        hQx_C->Fill(Qx_C_event);
+        hQy_C->Fill(Qy_C_event);
+        hPsi2_pos->Fill(psi2_pos);
+        hPsi2_neg->Fill(psi2_neg);
+        hPsi2_C->Fill(psi2_C_event);
+        hPsi2_posZnegZ->Fill(psi2_pos, psi2_neg);
+        hPsiDiff->Fill(deltaPsi);
+        hCos2PsiDiff->Fill(cos2DeltaPsi);
+    }
+
+//END OF EVENT LOOP
+//END OF EVENT LOOP
+//END OF EVENT LOOP
+//END OF EVENT LOOP
+
+    double meanCos = hCos2PsiDiff->GetMean(); //resolution is calculated from a mean of the overal distribution of cos2(PsiA-PsiB)
+    double meanCosError = hCos2PsiDiff->GetMeanError(); //root function to get error on the mean
+
+    double resolution = 0.0; //initializing a resolution variable; defined after event loop because Res is a calculation the mean dist
+    double resolutionError = 0.0; //initializing a resolution error variable
+
+    if (meanCos > 0.0) { //any negative values end up being 0 because resolution is initialized to be 0
+        resolution = std::sqrt(2.0 * meanCos); //negative values will give an NaN because you can't take a sqrt of a negative number
+        resolutionError = meanCosError / resolution; //calc for res error
+    }
+
+    std::cout << "\nRow\trad_i\t rad_f \t eta_i     \t eta_f      \t AB      \t AC      \t BC      \t R3      \t R3_error \n";
+    std::cout << "-----------------------------------------------------------------------------------------------------------------------------------\n";
+    for (int r = 0; r < NROWS; r++) {
+        double meanCos_AB = hCosAB_rows[r]->GetMean();
+        double meanCos_AC = hCosAC_rows[r]->GetMean();
+        double meanCos_BC = hCosBC_rows[r]->GetMean();
+
+        double meanCosError_AB = hCosAB_rows[r]->GetMeanError();
+        double meanCosError_AC = hCosAC_rows[r]->GetMeanError();
+        double meanCosError_BC = hCosBC_rows[r]->GetMeanError();
+
+        double resolution_row = 0.0; //3 detector resolution for row r
+        double resolutionError_row = 0.0; //initializing a resolution error variable
+
+        if (meanCos_AB > 0.0 && meanCos_AC > 0.0 && meanCos_BC > 0.0) {
+            resolution_row = std::sqrt((meanCos_AB * meanCos_AC) / meanCos_BC);
+
+            //error propagation using ROOT's mean errors on AB, AC, BC
+            double fractionalErrorSumSquares = 0.0;
+            fractionalErrorSumSquares += (meanCosError_AB / meanCos_AB) * (meanCosError_AB / meanCos_AB);
+            fractionalErrorSumSquares += (meanCosError_AC / meanCos_AC) * (meanCosError_AC / meanCos_AC);
+            fractionalErrorSumSquares += (meanCosError_BC / meanCos_BC) * (meanCosError_BC / meanCos_BC);
+
+            resolutionError_row = 0.5 * resolution_row * std::sqrt(fractionalErrorSumSquares);
+        }
+
+        hEventRes_rows->SetBinContent(r + 1, resolution_row); //indexing starts at 1 rather than 0 though in my analysis code, it starts at 0
+        hEventRes_rows->SetBinError(r + 1, resolutionError_row); 
+        hEventRes_rows->GetXaxis()->SetBinLabel(r + 1, Form("R%d", r + 1));
+
+        std::cout << r + 1 << "\t"
+         << rad_i[r] << " \t "
+         << rad_f[r] << " \t "
+         << eta_i[r] << " \t "
+         << eta_f[r] << " \t "
+         << meanCos_AB << " \t "
+         << meanCos_AC << " \t "
+         << meanCos_BC << " \t "
+         << resolution_row << "  \t "
+         << resolutionError_row << std::endl;
+
+        if(resolution_row==0){
+            cout<< "the row " << r + 1 << " has a 3 detector resolution of 0"<< endl;
+            cout<< "Following information: AB = " << meanCos_AB << ", AC = " << meanCos_AC << ", BC = " << meanCos_BC << endl;
+            cout<< "Entries: AB = " << hCosAB_rows[r]->GetEntries()
+                << ", AC = " << hCosAC_rows[r]->GetEntries()
+                << ", BC = " << hCosBC_rows[r]->GetEntries() << endl;
+        } 
+    }
+
+    hEventRes->SetBinContent(1, resolution); //one bin with the overall resolution
+    hEventRes->GetXaxis()->SetBinLabel(1, "R"); //only one bin with the overall resolution value
+
+    std::cout << "Resolution = " << resolution << " +/- " << resolutionError << std::endl; //report the error on the resolution
+    std::cout << "N selected events = " << nSelected << std::endl; //print selected events
+    std::cout << "Three detector method used: A = +row, B = full -Z detector, C = -2 < eta < 2\n";
+
+    fout->cd();
+
+    hNeg->Write();
+    hPos->Write();
+    hTot->Write();
+    hQx_pos->Write();
+    hQy_pos->Write();
+    hQx_neg->Write();
+    hQy_neg->Write();
+    hQx_C->Write();
+    hQy_C->Write();
+    hPsi2_pos->Write();
+    hPsi2_neg->Write();
+    hPsi2_C->Write();
+    hPsi2_posZnegZ->Write();
+    hPsiDiff->Write();
+    hCos2PsiDiff->Write();
+    hEventRes->Write();
+    hEventRes_rows->Write();
+
+    for (int r = 0; r < NROWS; r++) {
+        hCos2PsiDiff_rows[r]->Write(); //write my histograms for psi 2 diff
+        hCosAB_rows[r]->Write(); //write my 3 detector cosine histograms
+        hCosAC_rows[r]->Write();
+        hCosBC_rows[r]->Write();
+    }
+
+    fout->Close();
+
+    if (useOtherFile) { //specifies to user which file was used
+        std::cout << "\nUsed input file: angantyr_events.root\n";
+    } else {
+        std::cout << "\nUsed input files: data/events_job*.root\n";
+    }
+
+    std::cout << "Output written to analysis_simpler_output.root\n";
+
+    return 0;
+}
