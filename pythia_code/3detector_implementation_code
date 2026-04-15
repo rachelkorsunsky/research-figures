@@ -64,8 +64,9 @@ int main() {
     const double eta_B_detector = 4.93;
 
     //third detector C: using central region
-    const double eta_C_min = -2.0; //horizontal detector from jamie's drawing
-    const double eta_C_max =  2.0;
+    const double eta_C_min = -1.0; //horizontal detector from jamie's drawing
+    const double eta_C_max =  1.0; //There is a "non-flow correlation" effect if the A, B, C regions are too close together 
+    //we change the spacing so that C is further away from B and potentially A( A changes)
 
     double eta_i[NROWS] = { //eta initial bounds array for sepd
         4.93233, 4.26131, 3.86352, 3.57992, 3.30993,
@@ -127,7 +128,7 @@ int main() {
     TH1D* hCosAC_rows[NROWS];
     TH1D* hCosBC_rows[NROWS];
 
-    for (int r = 0; r < NROWS; r++) {
+    for (int r = 0; r < NROWS; r++) { //necessary for calculating means...
         hCosAB_rows[r] = new TH1D(
             Form("hCosAB_row_%d", r + 1),
             Form("cos(2(#Psi_{A}-#Psi_{B})) row %d;cos(2(#Psi_{A}-#Psi_{B}));Events", r + 1),
@@ -308,8 +309,8 @@ int main() {
         resolutionError = meanCosError / resolution; //calc for res error
     }
 
-    std::cout << "\nRow\trad_i\t rad_f \t eta_i     \t eta_f      \t AB      \t AC      \t BC      \t R3      \t R3_error \n";
-    std::cout << "-----------------------------------------------------------------------------------------------------------------------------------\n";
+    std::cout << "\nRow\trad_i\t rad_f \t eta_i     \t eta_f      \t R3      \t R3_error \n"; //start of my chart
+    std::cout << "--------------------------------------------------------------------------------------------\n";
 
     for (int r = 0; r < NROWS; r++) {
         double meanCos_AB = hCosAB_rows[r]->GetMean();
@@ -321,8 +322,8 @@ int main() {
         double resolution_row = 0.0; //3 detector resolution for row r
         double resolutionError_row = 0.0; //initializing a resolution error variable
 
-        if (meanCos_AB > 0.0 && meanCos_AC > 0.0 && meanCos_BC > 0.0) {
-            resolution_row = std::sqrt((meanCos_AB * meanCos_AC) / meanCos_BC);
+        if (meanCos_AB > 0.0 && meanCos_AC > 0.0 && meanCos_BC > 0.0) { //need to avoid NaN, if neg, no resolution
+            resolution_row = std::sqrt((meanCos_AB * meanCos_AC) / meanCos_BC); //exact formula for 3 detector
 
             //error propagation using ROOT's mean errors on AB, AC, BC
             double fractionalErrorSumSquares = 0.0;
@@ -341,9 +342,6 @@ int main() {
         << rad_f[r] << " \t "
         << eta_i[r] << " \t "
         << eta_f[r] << " \t "
-        << meanCos_AB << " \t "
-        << meanCos_AC << " \t "
-        << meanCos_BC << " \t "
         << resolution_row << "  \t "
         << resolutionError_row << std::endl;
 
@@ -361,7 +359,7 @@ int main() {
 
         std::cout << "Resolution = " << resolution << " +/- " << resolutionError << std::endl; //report the error on the resolution
         std::cout << "N selected events = " << nSelected << std::endl; //print selected events
-        std::cout << "Three detector method used: A = +row, B = full -Z detector, C = -2 < eta < 2\n";
+        std::cout << "Three detector method used: A = +row, B = full -Z detector, C = " << eta_C_min << " eta "<< eta_C_min<< endl;
 
         fout->cd();
 
