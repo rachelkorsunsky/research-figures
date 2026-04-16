@@ -13,13 +13,12 @@
 
 using namespace std;
 bool useOtherFile = true; //flag
-int N_RINGS = 1; //for defining rings in the future
 
 const int NROWS = 15; //15 rows in my chart corresponding to segmented rings
 
 int main() {
 
-    //TFile* file = nullptr;
+    //TFile* file = nullptr; //left over from tfiles
 
     //TTree* tree = nullptr;
     TChain* chain = nullptr; //only using tchains this time
@@ -64,9 +63,11 @@ int main() {
     const double eta_B_detector = 4.93;
 
     //third detector C: using central region
-    const double eta_C_min = -1.0; //horizontal detector from jamie's drawing
-    const double eta_C_max =  1.0; //There is a "non-flow correlation" effect if the A, B, C regions are too close together 
+    const double eta_C_min = -1; //horizontal detector from jamie's drawing
+    const double eta_C_max =  1; //There is a "non-flow correlation" effect if the A, B, C regions are too close together 
     //we change the spacing so that C is further away from B and potentially A( A changes)
+    //observations: as I decrease these eta values, the error rises
+    //the actual resolution values 
 
     double eta_i[NROWS] = { //eta initial bounds array for sepd
         4.93233, 4.26131, 3.86352, 3.57992, 3.30993,
@@ -113,7 +114,7 @@ int main() {
     TH1D* hEventRes = new TH1D("hEventRes","Event Plane Resolution;Quantity;Value",1, 0.5, 1.5);
     TH1D* hEventRes_rows = new TH1D("hEventRes_rows","Event Plane Resolution by row (3 detector);Row;Resolution",NROWS, 0.5, NROWS + 0.5);
 
-    //these are just QA histograms for the old 2-detector row difference
+    //these are just  histograms for the 2-detector row difference
     TH1D* hCos2PsiDiff_rows[NROWS];
     for (int r = 0; r < NROWS; r++) { //this creates 15 histograms for cos2psi
         hCos2PsiDiff_rows[r] = new TH1D(
@@ -123,8 +124,8 @@ int main() {
         );
     }
 
-    //for the three detector method, make histograms of the cosine terms and use ROOT to get mean and mean error
-    TH1D* hCosAB_rows[NROWS];
+    //for the three detector method
+    TH1D* hCosAB_rows[NROWS]; //this is needed because later on, I get mean and mean error from these histograms
     TH1D* hCosAC_rows[NROWS];
     TH1D* hCosBC_rows[NROWS];
 
@@ -160,12 +161,12 @@ int main() {
             //if (useOtherFile) { tree->GetEntry(i); }else {  chain->GetEntry(i);} //left over from a previous ttree file
             chain->GetEntry(i);
 
-            if (!eta || !phi) continue;
+            if (!eta || !phi) continue; //need these values for calculations
             if (eta->size() != phi->size()) continue; //if the number of etas and phis arent the same, the number of particles aren't the same so skip event
 
             size_t nPart = eta->size(); //nPart = number of particles determined by number of eta entries in vector
             
-            //define variables before particle loops so no scope issues
+            //define/initialize variables before particle loops so no scope issues
             int nNeg = 0;
             int nPos = 0;
             int nTot = 0;
@@ -174,7 +175,7 @@ int main() {
             double Qx_C_event = 0.0, Qy_C_event = 0.0; //Q vector for third detector C
             double psi2_pos = 0.0;
             double psi2_neg = 0.0;
-            double psi2_C_event = 0.0;
+            double psi2_C_event = 0.0; 
 
             double Qx_pos_rows[NROWS] = {0.0}; //one eta has been segmented; using arrays where NROWS = 15
             double Qy_pos_rows[NROWS] = {0.0}; //need to initialize arrays to 0
@@ -226,7 +227,7 @@ int main() {
             }
 
             //only calculate event plane angles after the Q vectors have already been accumulated
-            if (Qx_pos != 0.0 || Qy_pos != 0.0) psi2_pos = 0.5 * std::atan2(Qy_pos, Qx_pos);
+            if (Qx_pos != 0.0 || Qy_pos != 0.0) psi2_pos = 0.5 * std::atan2(Qy_pos, Qx_pos); //neither values can be 0, especially Qx because result is undefined
             if (Qx_neg != 0.0 || Qy_neg != 0.0) psi2_neg = 0.5 * std::atan2(Qy_neg, Qx_neg);
             if (Qx_C_event != 0.0 || Qy_C_event != 0.0) psi2_C_event = 0.5 * std::atan2(Qy_C_event, Qx_C_event);
 
@@ -242,34 +243,39 @@ int main() {
             //cos is positive when psi is very small around 0
             
 
-            for (int r = 0; r < NROWS; r++) {
+            for (int r = 0; r < NROWS; r++) { //main 3 detector implementation loop
                 
-            
-                psi2_pos_rows[r] = 0.5 * std::atan2(Qy_pos_rows[r], Qx_pos_rows[r]); //A for this row
-
-            
-            
-                double deltaPsi_row = psi2_pos_rows[r] - psi2_neg;
-
-                while (deltaPsi_row >=  TMath::Pi()/2) deltaPsi_row -= TMath::Pi(); //if delta Psi is greater than pi/2, subtract it from pi
-                while (deltaPsi_row <= -TMath::Pi()/2) deltaPsi_row += TMath::Pi(); //if delta Psi is less than pi/2, add it to pi
-                double cos2DeltaPsi_row = std::cos(2.0 * deltaPsi_row);
-
-                hCos2PsiDiff_rows[r]->Fill(cos2DeltaPsi_row); 
-                nSelected_rows[r]++; //counter for the amount of selected events for my rows array
-        
-
                 //A = +row r, B = full -Z detector, C = central detector
                 //for the 3 detector method, all three Q vectors need to exist or else atan2(0,0) would fake a psi of 0
-
+            
+                psi2_pos_rows[r] = 0.5 * std::atan2(Qy_pos_rows[r], Qx_pos_rows[r]); //A for this row
                 double psiA = psi2_pos_rows[r]; //specific ring psi value for positive detector
                 double psiB = psi2_neg; //entire negative detector
                 double psiC = psi2_C_event; //psi of my little eta range
+            
+            
+                double deltaPsi_AB = psiA - psiB; //same as detector A - detector B
+                double deltaPsi_AC = psiA - psiC; //same as detector A - detector C
+                double deltaPsi_BC = psiB - psiC; //same as detector A - detector C
 
-                double cosAB = std::cos(2.0 * (psiA - psiB)); //compute the different cosines
-                double cosAC = std::cos(2.0 * (psiA - psiC));
-                double cosBC = std::cos(2.0 * (psiB - psiC));
+                //my wrap arounds
 
+                while (deltaPsi_AB >=  TMath::Pi()/2) deltaPsi_AB -= TMath::Pi(); //if delta Psi is greater than pi/2, subtract it from pi
+                while (deltaPsi_AB <= -TMath::Pi()/2) deltaPsi_AB += TMath::Pi(); //if delta Psi is less than pi/2, add it to pi
+                
+                while (deltaPsi_AC >=  TMath::Pi()/2) deltaPsi_AC -= TMath::Pi(); 
+                while (deltaPsi_AC <= -TMath::Pi()/2) deltaPsi_AC += TMath::Pi(); 
+
+                while (deltaPsi_BC >=  TMath::Pi()/2) deltaPsi_BC -= TMath::Pi(); 
+                while (deltaPsi_BC <= -TMath::Pi()/2) deltaPsi_BC += TMath::Pi(); 
+                
+                double cosAB = std::cos(2.0 * deltaPsi_AB);//compute the different cosines 
+                double cosAC = std::cos(2.0 * deltaPsi_AC);
+                double cosBC = std::cos(2.0 * deltaPsi_BC);
+
+                hCos2PsiDiff_rows[r]->Fill(cosAB); 
+                nSelected_rows[r]++; //counter for the amount of selected events for my rows array
+        
                 hCosAB_rows[r]->Fill(cosAB); //fill histograms and let ROOT get the mean and mean error later
                 hCosAC_rows[r]->Fill(cosAC);
                 hCosBC_rows[r]->Fill(cosBC);
@@ -359,7 +365,7 @@ int main() {
 
         std::cout << "Resolution = " << resolution << " +/- " << resolutionError << std::endl; //report the error on the resolution
         std::cout << "N selected events = " << nSelected << std::endl; //print selected events
-        std::cout << "Three detector method used: A = +row, B = full -Z detector, C = " << eta_C_min << " eta "<< eta_C_min<< endl;
+        std::cout << "Three detector method used: A = +row, B = full -Z detector, C = " << eta_C_min << " eta "<< eta_C_max << endl;
 
         fout->cd();
 
