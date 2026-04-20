@@ -63,13 +63,13 @@ int main() {
     const double eta_B_detector = 4.93;
 
     //third detector C: using central region
-    const double eta_C_min = -1; //horizontal detector from jamie's drawing
-    const double eta_C_max =  1; //There is a "non-flow correlation" effect if the A, B, C regions are too close together 
+    const double eta_C_min = -0.5; //horizontal detector from jamie's drawing
+    const double eta_C_max =  0.5; //There is a "non-flow correlation" effect if the A, B, C regions are too close together 
     //we change the spacing so that C is further away from B and potentially A( A changes)
-    //observations: as I decrease these eta values, the error rises
-    //the actual resolution values 
+    //observations: as I decrease the magnitude of eta values, the error rises
+    //the actual resolution values fluctuate with not much correlation on which ones will rise and fall..
 
-    double eta_i[NROWS] = { //eta initial bounds array for sepd
+    double eta_i[NROWS] = { //eta initial bounds array for sepd (15)
         4.93233, 4.26131, 3.86352, 3.57992, 3.30993,
         3.09792, 2.92347, 2.77535, 2.64676, 2.53323,
         2.43168, 2.33973, 2.25606, 2.17925, 2.10832
@@ -159,7 +159,7 @@ int main() {
 
         for (Long64_t i = 0; i < nEntries; i++) { //loop for all events; lots of events so we use Long64_t variable type which hold large integers
             //if (useOtherFile) { tree->GetEntry(i); }else {  chain->GetEntry(i);} //left over from a previous ttree file
-            chain->GetEntry(i);
+            chain->GetEntry(i); 
 
             if (!eta || !phi) continue; //need these values for calculations
             if (eta->size() != phi->size()) continue; //if the number of etas and phis arent the same, the number of particles aren't the same so skip event
@@ -181,7 +181,8 @@ int main() {
             double Qy_pos_rows[NROWS] = {0.0}; //need to initialize arrays to 0
             double psi2_pos_rows[NROWS] = {0.0};
 
-            for (size_t j = 0; j < nPart; j++) { //particle loop where number of particles is the size of the eta vector
+            for (size_t j = 0; j < nPart; j++) { //particle loop where number of particles is the size of the eta vector 
+                //using to find what range is good multiplicity, 1500-2000 right now
                 double eta_particle = eta->at(j);
 
                 if (eta_particle >= -eta_B_good_events && eta_particle <= -eta_A_good_events) nNeg++; //if eta for a specific particle is in the bounds of -2.03 to -4.93, its negative
@@ -231,7 +232,7 @@ int main() {
             if (Qx_neg != 0.0 || Qy_neg != 0.0) psi2_neg = 0.5 * std::atan2(Qy_neg, Qx_neg);
             if (Qx_C_event != 0.0 || Qy_C_event != 0.0) psi2_C_event = 0.5 * std::atan2(Qy_C_event, Qx_C_event);
 
-            double deltaPsi = psi2_pos - psi2_neg;  
+            double deltaPsi = psi2_pos - psi2_neg; //overall sEPD 
 
             // wrap angle into [-pi/2, pi/2]; should consider making it into a function at some point
             while (deltaPsi >  TMath::Pi()/2) deltaPsi -= TMath::Pi(); //if delta Psi is greater than pi/2, subtract it from pi
@@ -243,7 +244,7 @@ int main() {
             //cos is positive when psi is very small around 0
             
 
-            for (int r = 0; r < NROWS; r++) { //main 3 detector implementation loop
+            for (int r = 0; r < NROWS; r++) { //main 3 detector implementation loop, loop through all rows
                 
                 //A = +row r, B = full -Z detector, C = central detector
                 //for the 3 detector method, all three Q vectors need to exist or else atan2(0,0) would fake a psi of 0
@@ -259,7 +260,7 @@ int main() {
                 double deltaPsi_BC = psiB - psiC; //same as detector A - detector C
 
                 //my wrap arounds
-
+                //need to turn into function
                 while (deltaPsi_AB >=  TMath::Pi()/2) deltaPsi_AB -= TMath::Pi(); //if delta Psi is greater than pi/2, subtract it from pi
                 while (deltaPsi_AB <= -TMath::Pi()/2) deltaPsi_AB += TMath::Pi(); //if delta Psi is less than pi/2, add it to pi
                 
@@ -316,10 +317,10 @@ int main() {
     }
 
     std::cout << "\nRow\trad_i\t rad_f \t eta_i     \t eta_f      \t R3      \t R3_error \n"; //start of my chart
-    std::cout << "--------------------------------------------------------------------------------------------\n";
+    std::cout << "----------------------------------------------------------------------------------------\n"; //break
 
     for (int r = 0; r < NROWS; r++) {
-        double meanCos_AB = hCosAB_rows[r]->GetMean();
+        double meanCos_AB = hCosAB_rows[r]->GetMean(); //root functions to get mean and error
         double meanCos_AC = hCosAC_rows[r]->GetMean();
         double meanCos_BC = hCosBC_rows[r]->GetMean();
         double meanCosError_AB = hCosAB_rows[r]->GetMeanError();
@@ -329,9 +330,10 @@ int main() {
         double resolutionError_row = 0.0; //initializing a resolution error variable
 
         if (meanCos_AB > 0.0 && meanCos_AC > 0.0 && meanCos_BC > 0.0) { //need to avoid NaN, if neg, no resolution
+            //if res is really small, can fluctuate between -0.01 and 0.01 resulting in a negative value but important to atch error value
             resolution_row = std::sqrt((meanCos_AB * meanCos_AC) / meanCos_BC); //exact formula for 3 detector
 
-            //error propagation using ROOT's mean errors on AB, AC, BC
+            //error using ROOT's mean errors on AB, AC, BC
             double fractionalErrorSumSquares = 0.0;
             fractionalErrorSumSquares += (meanCosError_AB / meanCos_AB) * (meanCosError_AB / meanCos_AB);
             fractionalErrorSumSquares += (meanCosError_AC / meanCos_AC) * (meanCosError_AC / meanCos_AC);
@@ -343,7 +345,8 @@ int main() {
         hEventRes_rows->SetBinError(r + 1, resolutionError_row); 
         hEventRes_rows->GetXaxis()->SetBinLabel(r + 1, Form("R%d", r + 1));
 
-        std::cout << r + 1 << "\t"
+        //data in the rows of my chart
+        std::cout << r + 1 << " \t"
         << rad_i[r] << " \t "
         << rad_f[r] << " \t "
         << eta_i[r] << " \t "
@@ -351,7 +354,7 @@ int main() {
         << resolution_row << "  \t "
         << resolutionError_row << std::endl;
 
-        if(resolution_row==0){
+        if(resolution_row==0){ //if resolution ends up being 0, report statistics and why
             cout<< "the row " << r + 1 << " has a 3 detector resolution of 0"<< endl;
             cout<< "Following information: AB = " << meanCos_AB << ", AC = " << meanCos_AC << ", BC = " << meanCos_BC << endl;
             cout<< "Entries: AB = " << hCosAB_rows[r]->GetEntries()
@@ -390,7 +393,7 @@ int main() {
         for (int r = 0; r < NROWS; r++) {
             hCos2PsiDiff_rows[r]->Write(); //write my histograms for psi 2 diff
             hCosAB_rows[r]->Write(); //write my 3 detector cosine histograms
-            hCosAC_rows[r]->Write();
+            hCosAC_rows[r]->Write(); 
             hCosBC_rows[r]->Write();
         }
 
